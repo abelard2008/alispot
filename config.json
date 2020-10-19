@@ -16,7 +16,7 @@
   },
   "ssr_server": {
     "port": 33333,
-    "password": "Tuxiang_314",
+    "password": "",
     "method": "aes-128-ctr",
     "protocol": "auth_sha1_v4",
     "protocol_param": "",
