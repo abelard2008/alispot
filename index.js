@@ -1,101 +1,22 @@
 const path = require('path')
-const fs = require('fs')
+const fs= require('fs')
 const crypto = require('crypto')
 
-const Core = require('@alicloud/pop-core')
 const dayjs = require('dayjs')
-const bunyan = require('bunyan')
-const ssh = require('ssh2')
+const util = require('./utils')
+const { forwardjs } = require('./forward')
+const log  = util.log
 
-const log = bunyan.createLogger({
-  name: 'alispot',
-  streams: [{
-    level: 'info',
-    stream: process.stdout
-  }, {
-    level: 'debug',
-    path: path.join(__dirname, 'alispot.log')
-  }]
-})
-
-const options = { method: 'POST', timeout: 20000 }
-
-function sleep (ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function _sshConnect (params) {
-  return new Promise((resolve, reject) => {
-    const conn = new ssh.Client()
-    conn.on('ready', () => {
-      resolve(conn)
-    }).on('error', err => {
-      reject(err)
-    }).connect(params)
-  })
-}
-
-async function sshConnect (params) {
-  for (let retryCount = 0; ; retryCount++) {
-    try {
-      return await _sshConnect(params)
-    } catch (err) {
-      if (retryCount >= 3) throw err
-      log.warn(`SSH连接失败，重试第${retryCount + 1}次...`)
-      await sleep(500)
-    }
-  }
-}
-
-function sshExec (conn, cmd) {
-  return new Promise((resolve, reject) => {
-    conn.exec(cmd, (err, stream) => {
-      if (err) {
-        reject(err)
-      } else {
-        let out = ''
-        stream.on('close', (code, signal) => {
-          out += `CLOSE: code=${code}, signal=${signal}`
-          log.debug(`CLOSE: code=${code}, signal=${signal}`)
-          resolve(out)
-        }).on('data', data => {
-          out += `STDOUT: ${data}\n`
-          log.debug(`STDOUT: ${data}`)
-        }).stderr.on('data', data => {
-          out += `STDERR: ${data}\n`
-          log.debug(`STDERR: ${data}`)
-        })
-      }
-    })
-  })
-}
-
-async function statusCheck (client, api, params, beforeStart, interval, times, check) {
-  if (beforeStart > 0) await sleep(beforeStart)
-  let retryCount = 0
-  while (retryCount < times) {
-    const result = await client.request(api, params, options)
-    if (check(result)) return result
-    await sleep(interval)
-    retryCount++
-  }
-  if (retryCount >= times) throw new Error('statusCheck timeout: ' + api)
-}
 
 async function main () {
   try {
-    const confPath = process.argv[2] || path.join(__dirname, 'config.json')
-    const config = JSON.parse(fs.readFileSync(confPath, 'utf8'))
-    const { RAM, ECS } = config
-    const client = new Core({
-      accessKeyId: RAM.accessKeyId,
-      accessKeySecret: RAM.accessKeySecret,
-      apiVersion: '2014-05-26',
-      endpoint: 'https://ecs.aliyuncs.com'
-    })
-
-    let result = await client.request('DescribeRegions', {}, options)
+    let result = await util.client.request('DescribeRegions', {}, util.options)
     log.debug({ result }, 'DescribeRegions')
+    let client = util.client
+    let options = util.options
+    let config = util.config
+    let statusCheck = util.statusCheck
+    let ECS = util.ECS
     client.endpoint = 'https://' + result.Regions.Region.find(o => o.RegionId === ECS.RegionId).RegionEndpoint
     log.info('地域"%s"的API地址："%s"', ECS.RegionId, client.endpoint)
 
@@ -159,7 +80,8 @@ async function main () {
       client.request('AuthorizeSecurityGroup', { ...params, IpProtocol: 'icmp', PortRange: '-1/-1' }, options), // enable ping
       client.request('AuthorizeSecurityGroup', { ...params, PortRange: '22/22' }, options),
       client.request('AuthorizeSecurityGroup', { ...params, PortRange: '80/80' }, options),
-      client.request('AuthorizeSecurityGroup', { ...params, PortRange: '443/443' }, options)
+      client.request('AuthorizeSecurityGroup', { ...params, PortRange: '443/443' }, options),
+      client.request('AuthorizeSecurityGroup', { ...params, PortRange }, options)
     ])
     log.debug({ result }, 'AuthorizeSecurityGroup')
     log.info(`为安全组${SecurityGroupId}开启端口`)
@@ -207,6 +129,19 @@ async function main () {
       const isoTime = localTime.toISOString()
       AutoReleaseTime = isoTime.replace(/\.\d{3}Z$/, 'Z')
     }
+    // if (Password) { // 预设密码的情况下，检查是否已有现成的实例
+    //   params = {
+    //     RegionId: ECS.RegionId,
+    //     InstanceName: 'alispotCreatedInstance'
+    //   }
+    //   result = await client.request('DescribeInstances', params, options)
+    //   if (result.TotalCount > 0 && result.Instances.Instance[0].Status === 'Running') {
+    //     const inst = result.Instances.Instance[0]
+    //     params = { RegionId: ECS.RegionId, InstanceId: inst.InstanceId, AutoReleaseTime }
+    //     await client.request('ModifyInstanceAutoReleaseTime', params, options)
+    //     // TODO: 
+    //   }
+    // }
     Password = Password || ('AliSpot@' + crypto.createHash('MD5').update('alispot' + Date.now()).digest('hex').substr(0, 13))
     params = {
       ...ECS,
@@ -232,6 +167,13 @@ async function main () {
     log.info('实例已启动，耗时约%s ms', (Date.now() - start))
     const IpAddress = result.Instances.Instance[0].PublicIpAddress.IpAddress[0]
     log.info('实例SSH连接信息: IP：%s, 端口: 22, 账户: root, 密码: %s', IpAddress, Password)
+    let ip_password = {
+        ip: IpAddress,
+        password: Password
+    };
+
+    fs.writeFileSync('ip-password.json', JSON.stringify(ip_password));
+
     log.info('SSH连接中...')
 
     const sshParams = {
@@ -240,17 +182,50 @@ async function main () {
       username: 'root',
       password: Password
     }
-    let conn = await sshConnect(sshParams)
+    let conn = await util.sshConnect(sshParams)
     log.info('SSH已连接；开始启用GoogleBBR...')
     start = Date.now()
-    await sshExec(conn, 'wget --no-check-certificate https://github.com/rockswang/alispot/raw/master/bbr.sh && chmod +x bbr.sh && ./bbr.sh')
+    await util.sshExec(conn, 'wget --no-check-certificate https://github.com/rockswang/alispot/raw/master/bbr.sh && chmod +x bbr.sh && ./bbr.sh')
     try { conn.end() } catch (err) { }
     log.info('GoogleBBR已启用，耗时约%s ms；系统重启...', (Date.now() - start))
 
     start = Date.now()
-    result = await statusCheck(client, 'DescribeInstances', params, 10000, 5000, 20, r => r.Instances.Instance[0].Status === 'Running')
+    result = await util.statusCheck(client, 'DescribeInstances', params, 10000, 5000, 20, r => r.Instances.Instance[0].Status === 'Running')
     log.debug({ result }, 'DescribeInstances')
     log.info('实例已重启，耗时约%s ms', (Date.now() - start))
+
+    conn = await util.sshConnect(sshParams)
+    log.info('SSH已重新连接；开始安装SSR Server...')
+    //await util.sshExec(conn, 'rm -f /etc/yum.repos.d/CentOS-Base.repo')
+    await util.sshExec(conn, 'curl -o /etc/yum.repos.d/CentOS-Base.repo http://mirrors.aliyun.com/repo/Centos-7.repo')
+    await util.sshExec(conn, 'yum clean all;yum makecache')
+    await util.sshExec(conn, 'yum install git -y')
+    await util.sshExec(conn, 'git clone -b manyuser https://github.com/shadowsocksr-backup/shadowsocksr.git')
+    //await sshExec(conn, 'wget https://codeload.github.com/shadowsocksr-backup/shadowsocksr/zip/manyuser')
+    const ssr = config.ssr_server
+    let args = `-p ${ssr.port} -k '${ssr.password}' -m '${ssr.method}' -O '${ssr.protocol}' -o '${ssr.obfs}'`
+    if (ssr.protocol_param) args += ` -G '${ssr.protocol_param}'`
+    if (ssr.obfs_param) args += ` -g '${ssr.obfs_param}'`
+    await util.sshExec(conn, `nohup python shadowsocksr/shadowsocks/server.py ${args} >> /dev/null 2>&1 &`)
+    try { conn.end() } catch (err) { }
+    log.info('SSR服务端已启动')
+    log.info('===== SSR客户端配置信息 =====')
+    log.info('  服务器IP: %s', IpAddress)
+    log.info('  服务器端口: %s', ssr.port)
+    log.info('  密码: %s', ssr.password)
+    log.info('  加密: %s', ssr.method)
+    log.info('  协议: %s', ssr.protocol)
+    log.info('  协议参数：%s', ssr.protocol_param || '无')
+    log.info('  混淆: %s', ssr.obfs)
+    log.info('  混淆参数: %s', ssr.obfs_param || '无')
+    log.info('===== SSH连接信息 =====')
+    log.info('  IP：%s: ', IpAddress)
+    log.info('  端口: 22')
+    log.info('  操作系统账户: root')
+    log.info('  操作系统密码: %s', Password)
+    log.info('===== 本地端口转发 =====')
+    log.info('  正在监听端口：%s', ssr.port)
+    forwardjs(['' + ssr.port, `${IpAddress}:${ssr.port}`])
   } catch (error) {
     log.fatal(error)
   }

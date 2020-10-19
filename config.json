@@ -1,11 +1,11 @@
 {
   "RAM": {
-    "accessKeyId": "----------------",
-	"accessKeySecret": "------------------------------"
+    "accessKeyId": "LTAI4FjgbKaoxFegH9UyH5ML",
+	"accessKeySecret": "nmn9kaMDJCWa5OK5Dq9jnuft7WQ5BF"
   },
   "ECS": {
-    "RegionId": "ap-southeast-1",
-    "AutoReleaseTime": "18:00:00",
+    "RegionId": "ap-northeast-1",
+    "AutoReleaseTime": "23:59:00",
     "ImageId": "centos_7_06_64_20G_alibase_20190711.vhd",
     "InstanceType": "ecs.xn4.small",
     "InternetMaxBandwidthOut": 10,
@@ -13,5 +13,14 @@
     "SystemDisk.Size": "20",
     "SystemDisk.Category": "cloud_efficiency",
     "SpotStrategy": "SpotAsPriceGo"
+  },
+  "ssr_server": {
+    "port": 33333,
+    "password": "Tuxiang_314",
+    "method": "aes-128-ctr",
+    "protocol": "auth_sha1_v4",
+    "protocol_param": "",
+    "obfs": "plain",
+    "obfs_param": ""
   }
 }
