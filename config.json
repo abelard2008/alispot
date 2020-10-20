@@ -1,7 +1,7 @@
 {
   "RAM": {
-    "accessKeyId": "LTAI4FjgbKaoxFegH9UyH5ML",
-	"accessKeySecret": "nmn9kaMDJCWa5OK5Dq9jnuft7WQ5BF"
+    "accessKeyId": "",
+	"accessKeySecret": ""
   },
   "ECS": {
     "RegionId": "ap-northeast-1",
